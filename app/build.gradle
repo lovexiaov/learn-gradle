@@ -1,5 +1,33 @@
 apply plugin: 'com.android.application'
 
+// get last git commit version hash code
+def getLastCommitId() {
+    return 'git rev-parse --short HEAD'.execute().text.trim()
+}
+
+def Properties mProps = new Properties()
+def propsFile = file('../gradle.properties')
+
+if (propsFile.exists() && propsFile.canRead()) {
+
+    mProps.load(new FileInputStream(propsFile))
+    // auto increment versionCode when there is
+    // some change sine last build
+    def runTasks = gradle.startParameter.taskNames
+    def currentVersion = mProps['VERSION_CODE'].toInteger()
+
+    if ('aR' in runTasks || 'assembleRelease' in runTasks) {
+        if (!mProps['COMMIT_ID'].equals(getLastCommitId())) {
+            currentVersion++
+            mProps['COMMIT_ID'] = getLastCommitId()
+            mProps['VERSION_CODE'] = currentVersion.toString()
+        }
+
+        mProps.store(propsFile.newWriter(), null)
+    }
+
+}
+
 android {
     compileSdkVersion 23
     buildToolsVersion "23.0.1"
@@ -8,15 +36,43 @@ android {
         applicationId "io.lovexiaov.learn_gradle"
         minSdkVersion 17
         targetSdkVersion 23
-        versionCode 1
-        versionName "1.0"
+        versionCode Integer.parseInt(VERSION_CODE)
+        versionName VERSION_NAME
     }
+
+    // must before buildTypes
+    signingConfigs {
+        release {
+            storeFile file(mProps['KEY_PATH'])
+            storePassword mProps['KEY_PASSWD']
+            keyAlias mProps['KEY_ALIAS']
+            keyPassword mProps['ALIAS_PASSWD']
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+
+            signingConfig signingConfigs.release
+
+            // rename apk file
+            applicationVariants.all { variant ->
+                variant.outputs.each { output ->
+                    def outputFile = output.outputFile
+                    if (outputFile != null && outputFile.name.endsWith('.apk')) {
+                        output.outputFile = file("${defaultConfig.versionName}_${getLastCommitId()}.apk")
+                    }
+                }
+            }
         }
     }
+
+    lintOptions {
+        abortOnError false
+    }
+
 }
 
 dependencies {
@@ -25,3 +81,17 @@ dependencies {
     compile 'com.android.support:appcompat-v7:23.0.1'
     compile 'com.android.support:design:23.0.1'
 }
+
+task copyNativeLibs(type: Copy) {
+    from fileTree(dir: 'libs', include: 'armeabi-v7a/*.so') into 'build/lib'
+}
+tasks.withType(JavaCompile) {
+    compileTask ->
+        compileTask.dependsOn copyNativeLibs
+        options.encoding = "UTF-8"
+}
+clean.dependsOn 'cleanCopyNativeLibs'
+tasks.withType(com.android.build.gradle.tasks.PackageApplication) { pkgTask ->
+    pkgTask.jniFolders = [new File(buildDir, 'lib')]
+}
+
